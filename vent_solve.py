@@ -345,13 +345,20 @@ def solve_cavity(fluid, vent, rho=1.0, dphi_of_mu=None, wake="frozen",
     mu, sig, cav = mu_wet, sigma_wet, None
     first, flip, resid, flips, sign_prev = None, False, 0.0, 0, None
     iterations = 0
-    # the spanwise surface velocity, lagged one iteration: the dynamic condition
-    # fixes the total speed and the chordwise component follows from it, so the
-    # spanwise one has to come from somewhere. It converges in two iterations.
+    # the spanwise surface velocity: the dynamic condition fixes the total speed
+    # and the chordwise component follows from it, so the spanwise one has to
+    # come from somewhere. It is taken from the WETTED baseline, not lagged from
+    # the cavity iterate. Lagged, it closes a loop through the free surface: the
+    # prescribed doublet strength on a cavity reaching the waterline does not
+    # vanish there, so its jump to the negative image across one strip makes a
+    # spanwise velocity of order mu/dy; that velocity lowers the chordwise cavity
+    # speed, which makes mu larger still. The loop grows as the strips get
+    # narrower and the load diverged under spanwise refinement (CL x20 at 80
+    # strips, AR_h = 1). The wetted crossflow honours the image and is bounded.
     span_dir = np.asarray(pan["dual"])[:, 1, :]
     span_dir = span_dir / np.maximum(np.linalg.norm(span_dir, axis=1,
                                                     keepdims=True), 1e-30)
-    v_span = np.zeros(len(sigma_wet))
+    v_span = np.einsum("kc,kc->k", wet["v_surf"], span_dir)
     memory = (None, None)          # one step of secant memory on the closure
     for iterations in range(1, vent["sub_max"] + 1):
         weight, _ = vcv.mask_from_lengths(pan, frame, length, vent["alpha_rad"],
@@ -374,7 +381,6 @@ def solve_cavity(fluid, vent, rho=1.0, dphi_of_mu=None, wake="frozen",
         dphi = None if dphi_of_mu is None else dphi_of_mu(mu)
         fields = vnl.vent_pressure(pan, mu, fluid["u_rel"], vent["u_ref"], vent,
                                    weight, dphi_dt=dphi, rho=rho)
-        v_span = np.einsum("kc,kc->k", fields["v_surf"], span_dir)
         thick = vcv.thickness(pan, frame, sig, sigma_wet, weight, v_s)
         cav = dict(fields)
         cav.update({"weight": weight, "l_c": length.copy(), "thickness": thick,
