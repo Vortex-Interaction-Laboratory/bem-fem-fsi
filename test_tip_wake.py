@@ -98,6 +98,22 @@ class TestTipFold(unittest.TestCase):
             vsl.relax_wake(fluid, vent)
 
 
+class TestTaper(unittest.TestCase):
+
+    def test_the_taper_thins_the_tip_linearly_and_keeps_the_image(self):
+        p = vm.strut_mesh(n_c=6, nspan_half=8, h=1.0, alpha_deg=0.0, tip_taper=0.25)
+        t = np.ptp(p[:, :9, 2], axis=0)
+        self.assertEqual(t[0], 0.0)
+        self.assertAlmostEqual(t[1] / t[3], 0.5, places=12)
+        self.assertEqual(t[2], t[3])
+        self.assertEqual(vm.symmetry_residual(p), 0.0)
+
+    def test_no_taper_is_the_default_mesh(self):
+        a = vm.strut_mesh(n_c=6, nspan_half=8, h=1.0, alpha_deg=5.0)
+        b = vm.strut_mesh(n_c=6, nspan_half=8, h=1.0, alpha_deg=5.0, tip_taper=0.0)
+        self.assertTrue(np.array_equal(a, b))
+
+
 class TestSpacing(unittest.TestCase):
 
     def test_the_spacings_keep_the_strut_exact(self):
