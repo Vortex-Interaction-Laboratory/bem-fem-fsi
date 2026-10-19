@@ -15,9 +15,10 @@ an explicit state dictionary, and prompts, prints and figures appear only under
 main().
 
     1 imports       numpy; thick_panel_wing
-    2 the edge      the tip line and the panel pairs across it
+    2 the edge      the tip line, the panel pairs across it, and a sharp tip
     3 the sheets    one vendored-format wake per tip
-    4 the fold      extra columns for assemble_system, and the strength sync
+    4 the fold      extra columns for assemble_system, the strength sync, and a
+                    steady solve for a wing without free surface
     5 main          a smoke test
 
 Three decisions are worth stating before the code.
@@ -82,6 +83,30 @@ def tip_edge(points, pan, side):
     return nodes, k_up, k_low
 
 
+def taper_tips(points, length, ends=(0, -1)):
+    """Thin the section linearly to zero over `length` from each pinched end. -> points
+
+    A pinched tip closes the section within one strip, a wedge that opens to a
+    blunt edge as the strips narrow, and a blunt edge supports no finite jump: a
+    tip sheet shed from it fades under refinement. Thinning over a fixed length
+    keeps the tip a wedge of fixed angle. The span runs along y and the thickness
+    along z, i.e. before any pitch; the camber line (mean of the paired wrap
+    nodes) is kept. ends: 0 for span node 0, -1 for span node nspan.
+    """
+    points = np.array(points, dtype=float)
+    if length <= 0.0:
+        return points
+    nspan = points.shape[1] - 1
+    mid = 0.5 * (points + points[::-1])                    # camber, per wrap pair
+    for end in ends:
+        y0 = points[0, 0 if end == 0 else nspan, 1]
+        for j in range(nspan + 1):
+            f = abs(points[0, j, 1] - y0) / length
+            if 0.0 < f < 1.0:
+                points[:, j, 2] = mid[:, j, 2] + f * (points[:, j, 2] - mid[:, j, 2])
+    return points
+
+
 # ------------------------------------------------------------- 3 the sheets
 
 def add_tip_wakes(fluid, sides=(0, -1)):
@@ -131,6 +156,29 @@ def sync_strengths(fluid, mu):
     """Slave the bound rows of every tip sheet to the current jumps (in place)."""
     for t in fluid.get("tip_wakes") or []:
         tpw.set_bound_strengths(t["wake"], mu, t["k_up"], t["k_low"])
+
+
+def solve_steady(state):
+    """One steady solve of a wing with no free surface, tip sheets folded in. -> state
+
+    The vendored solve_once with the fold extended; frozen wake geometry (the tip
+    sheets are not relaxed). tpw.get_loads then reads the strengths as usual.
+    """
+    pan = state["panels"]
+    if state["blocks"] is None or state["blocks_version"] != state["geom_version"]:
+        state["blocks"] = tpw.assemble_body(pan)
+        state["blocks_version"] = state["geom_version"]
+    sigma = tpw.source_strengths(pan["normals"], state["u_rel"])
+    pb, pk = tpw.wake_influence(pan["centroids"], state["wake"], state["onset"])
+    pb, pk, k_up, k_low = fold_arrays(state, pan["centroids"], pb, pk, pan["k_up"], pan["k_low"])
+    n = len(sigma)
+    a_mat, rhs = tpw.assemble_system(state["blocks"]["D"], state["blocks"]["S"], pb, pk, k_up, k_low,
+                                     np.zeros(n, dtype=np.int8), np.zeros(n), sigma)
+    mu = np.linalg.solve(a_mat, rhs)
+    state["mu"], state["sigma"] = mu, sigma
+    tpw.set_bound_strengths(state["wake"], mu, pan["k_up"], pan["k_low"])
+    sync_strengths(state, mu)
+    return state
 
 
 # ------------------------------------------------------------------ 5 main

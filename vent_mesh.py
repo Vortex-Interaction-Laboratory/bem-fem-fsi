@@ -64,6 +64,7 @@ import numpy as np
 import thick_panel_wing as tpw
 import make_thick_sample_inputs as mts
 import fem_mesh
+import tip_wake as tw
 
 DEPTH_AXIS = 1                 # y. The span of a surface-piercing strut is
                                # vertical, so the spanwise axis IS the depth
@@ -170,14 +171,9 @@ def strut_mesh(n_c=8, nspan_half=8, h=1.0, chord=1.0, thickness=0.12,
         d = 0.5 * h * (1.0 - np.cos(np.pi * np.arange(nspan_half + 1) / nspan_half))
         y = -h + d if image else -0.5 * h + d
         points[:, :nspan_half + 1, DEPTH_AXIS] = y[None, :]
-    if tip_taper > 0.0:             # thickness is z before the yaw; camber stays
-        y0 = points[0, 0, DEPTH_AXIS]
-        nj = nspan_half + 1 if image else nspan + 1
-        for j in range(1, nj):
-            f = (points[0, j, DEPTH_AXIS] - y0) / tip_taper
-            if f < 1.0:
-                zc = 0.5 * (points[:, j, 2] + points[::-1, j, 2])
-                points[:, j, 2] = zc + f * (points[:, j, 2] - zc)
+    # the free tip only: the image is written from it below, and the waterline
+    # end of image=False is not a tip
+    points = tw.taper_tips(points, tip_taper, ends=(0,))
     if image:
         points = symmetrise_points(points, y_fs=0.0)
         points[..., DEPTH_AXIS] += y_fs

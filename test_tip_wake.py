@@ -10,6 +10,7 @@ import vent_cavity as vcv
 import vent_mesh as vm
 import vent_solve as vsl
 import tip_wake as tw
+import make_thick_sample_inputs as mts
 
 
 def strut(tip, regime="FW", n_c=8, nspan_half=6, alpha=10.0):
@@ -112,6 +113,34 @@ class TestTaper(unittest.TestCase):
         a = vm.strut_mesh(n_c=6, nspan_half=8, h=1.0, alpha_deg=5.0)
         b = vm.strut_mesh(n_c=6, nspan_half=8, h=1.0, alpha_deg=5.0, tip_taper=0.0)
         self.assertTrue(np.array_equal(a, b))
+
+
+class TestWing(unittest.TestCase):
+
+    def wing(self, tip, taper=0.0):
+        pts = mts.thick_wing_mesh(n_c=8, nspan=12, span=2.0, root_chord=1.0, taper=1.0,
+                                  sweep_deg=0.0, twist_deg=0.0, camber=0.0, thickness=0.12)
+        pts = tw.taper_tips(pts, taper)
+        pts = tpw.pitch_mesh(pts, np.radians(8.0))
+        onset = lambda p: np.tile([1.0, 0.0, 0.0], (len(np.atleast_2d(p)), 1))
+        st = tpw.init_state(pts, onset, u_ref=1.0, config={"nwake": 6})
+        if tip:
+            tw.add_tip_wakes(st)
+        return st, pts
+
+    def test_without_sheets_the_steady_solve_is_the_vendored_one(self):
+        a, _ = self.wing(False); b, _ = self.wing(False)
+        tpw.solve(a, wake="frozen"); tw.solve_steady(b)
+        self.assertTrue(np.allclose(a["mu"], b["mu"], rtol=0, atol=1e-12))
+
+    def test_both_wing_tips_shed_and_taper(self):
+        st, pts = self.wing(True, taper=0.3)
+        t = np.ptp(pts[:, :, 2] - 0.0, axis=0)
+        self.assertEqual(t[0], 0.0); self.assertLess(t[1], t[6])
+        self.assertAlmostEqual(t[1] / t[-2], 1.0, places=12)      # symmetric ends
+        cl0 = tpw.get_loads(tpw.solve(self.wing(False, 0.3)[0], wake="frozen"))["resultants"]["CL"]
+        cl1 = tpw.get_loads(tw.solve_steady(st))["resultants"]["CL"]
+        self.assertGreater(cl1, cl0)
 
 
 class TestSpacing(unittest.TestCase):
