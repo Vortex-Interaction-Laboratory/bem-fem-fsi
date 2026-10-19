@@ -118,7 +118,7 @@ def symmetry_residual(points, y_fs=0.0):
 
 
 def strut_mesh(n_c=8, nspan_half=8, h=1.0, chord=1.0, thickness=0.12,
-               camber=0.0, alpha_deg=0.0, y_fs=0.0, image=True):
+               camber=0.0, alpha_deg=0.0, y_fs=0.0, image=True, spacing="uniform"):
     """Wrapped surface of a surface-piercing strut. -> (2*n_c+1, nspan+1, 3)
 
     image=True (the default) returns the DOUBLED body: the strut immersed to
@@ -135,8 +135,18 @@ def strut_mesh(n_c=8, nspan_half=8, h=1.0, chord=1.0, thickness=0.12,
     The strut is prismatic - unit taper, no sweep, no twist - and yawed by
     alpha_deg about the span axis, which for a vertical span is the incidence.
     Composed from the vendored builder and then symmetrised; no geometry is
-    written here.
+    written here beyond the station depths.
+
+    spacing chooses the depth of the spanwise stations on the immersed half:
+    'uniform' (the default); 'tip', the builder's cosine over the whole doubled
+    span, which clusters at the pinched tip and is coarsest at the waterline;
+    'cosine', a full cosine over the immersed half, clustered at both the tip
+    and the waterline, the two places where the loading varies fastest. The
+    strut is prismatic, so moving a station changes nothing but its depth.
     """
+    if spacing not in ("uniform", "tip", "cosine"):
+        raise ValueError(f"unknown spacing '{spacing}'; choose from 'uniform', "
+                         f"'tip', 'cosine'")
     if h <= 0.0 or chord <= 0.0:
         raise ValueError(f"immersion and chord must be positive; got h={h}, "
                          f"chord={chord}")
@@ -145,7 +155,12 @@ def strut_mesh(n_c=8, nspan_half=8, h=1.0, chord=1.0, thickness=0.12,
                                  span=(2.0 * h if image else h),
                                  root_chord=chord, taper=1.0, sweep_deg=0.0,
                                  twist_deg=0.0, camber=camber,
-                                 thickness=thickness)
+                                 thickness=thickness,
+                                 cosine_span=(spacing == "tip"))
+    if spacing == "cosine":         # depth from the tip (0) to the waterline (h)
+        d = 0.5 * h * (1.0 - np.cos(np.pi * np.arange(nspan_half + 1) / nspan_half))
+        y = -h + d if image else -0.5 * h + d
+        points[:, :nspan_half + 1, DEPTH_AXIS] = y[None, :]
     if image:
         points = symmetrise_points(points, y_fs=0.0)
         points[..., DEPTH_AXIS] += y_fs

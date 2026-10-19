@@ -98,5 +98,26 @@ class TestTipFold(unittest.TestCase):
             vsl.relax_wake(fluid, vent)
 
 
+class TestSpacing(unittest.TestCase):
+
+    def test_the_spacings_keep_the_strut_exact(self):
+        for sp in ("uniform", "tip", "cosine"):
+            p = vm.strut_mesh(n_c=6, nspan_half=6, h=1.0, alpha_deg=5.0, spacing=sp)
+            self.assertEqual(vm.symmetry_residual(p), 0.0)
+            y = p[3, :7, 1]
+            self.assertAlmostEqual(y[0], -1.0, places=14)
+            self.assertAlmostEqual(y[-1], 0.0, places=14)
+            self.assertTrue(np.all(np.diff(y) > 0.0))
+
+    def test_cosine_clusters_at_the_tip_and_the_waterline(self):
+        p = vm.strut_mesh(n_c=6, nspan_half=6, h=1.0, alpha_deg=5.0, spacing="cosine")
+        dy = np.diff(p[3, :7, 1])
+        self.assertLess(dy[0], dy[3]); self.assertLess(dy[-1], dy[3])
+
+    def test_an_unknown_spacing_is_refused(self):
+        with self.assertRaises(ValueError):
+            vm.strut_mesh(n_c=6, nspan_half=6, spacing="sine")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
