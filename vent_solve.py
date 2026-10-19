@@ -69,6 +69,7 @@ import vent_mesh as vm
 import vent_cavity as vcv
 import vent_loads as vnl
 import vent_section as vs
+import tip_wake as tw
 
 MAX_WAKE_ITER = 12             # wake relaxation sweeps; the vendored default
 WAKE_TOL = 1e-4                # wake displacement, in chords
@@ -94,11 +95,16 @@ def _system(fluid, vent, wake_mode):
         fluid["blocks"] = tpw.assemble_body(pan)
         fluid["blocks_version"] = fluid["geom_version"]
     p_bound, phi_known = (None, None)
+    k_up, k_low = pan["k_up"], pan["k_low"]
     if fluid["wake"] is not None and wake_mode != "none":
         p_bound, phi_known = tpw.wake_influence(pan["centroids"], fluid["wake"],
                                                 fluid["onset"])
+        # tip sheets, when shed, are more strips of the same fold
+        p_bound, phi_known, k_up, k_low = tw.fold_arrays(
+            fluid, pan["centroids"], p_bound, phi_known, k_up, k_low)
     return {"D": fluid["blocks"]["D"], "S": fluid["blocks"]["S"],
-            "p_bound": p_bound, "phi_known": phi_known}
+            "p_bound": p_bound, "phi_known": phi_known,
+            "k_up": k_up, "k_low": k_low}
 
 
 def image_sigma(pan, vent, u_rel, sign=-1.0):
@@ -136,7 +142,7 @@ def mixed_solve(fluid, vent, sys, sigma, unknown_type=None, mu_fixed=None):
         else np.asarray(unknown_type, dtype=np.int8)
     mu_fixed = np.zeros(n) if mu_fixed is None else np.asarray(mu_fixed, float)
     a_mat, rhs = tpw.assemble_system(sys["D"], sys["S"], sys["p_bound"],
-                                     sys["phi_known"], pan["k_up"], pan["k_low"],
+                                     sys["phi_known"], sys["k_up"], sys["k_low"],
                                      unknown_type, mu_fixed, sigma)
     x = np.linalg.solve(a_mat, rhs)
     mask = unknown_type == 1
@@ -151,6 +157,7 @@ def _commit_strengths(fluid, vent, mu, sigma):
     if fluid["wake"] is not None:
         tpw.set_bound_strengths(fluid["wake"], mu, fluid["panels"]["k_up"],
                                 fluid["panels"]["k_low"])
+        tw.sync_strengths(fluid, mu)
     fluid["vent_sign"] = -1.0 if vent["image"] else 0.0
     return fluid
 
@@ -444,6 +451,9 @@ def relax_wake(fluid, vent, max_iter=MAX_WAKE_ITER, tol=WAKE_TOL, sign=-1.0):
     whose position is not a degree of freedom. So each sweep solves, convects and
     then PROJECTS the image wake back onto the mirror of the real one.
     """
+    if fluid.get("tip_wakes"):
+        raise NotImplementedError("tip sheets are frozen: relax the wake without "
+                                  "tip shedding, or solve with wake='frozen'")
     for _ in range(max(int(max_iter), 1)):
         fluid = solve_wetted(fluid, vent, "frozen", sign)
         if fluid["wake"] is None:
@@ -470,6 +480,9 @@ def shed_and_project(fluid, vent, dt, nmax=None):
     """
     if fluid["wake"] is None:
         return fluid, 0.0
+    if fluid.get("tip_wakes"):
+        raise NotImplementedError("tip sheets are steady and frozen; they are not "
+                                  "shed in a march")
     v_nodes = tpw.wake_node_velocity(fluid)
     tpw.shed(fluid["wake"], v_nodes, dt,
              v_shed=tpw.te_convection_velocity(fluid))
