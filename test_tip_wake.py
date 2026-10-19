@@ -134,8 +134,11 @@ class TestWing(unittest.TestCase):
         self.assertTrue(np.allclose(a["mu"], b["mu"], rtol=0, atol=1e-12))
 
     def test_both_wing_tips_shed_and_taper(self):
-        st, pts = self.wing(True, taper=0.3)
-        t = np.ptp(pts[:, :, 2] - 0.0, axis=0)
+        st, _ = self.wing(True, taper=0.3)
+        flat = tw.taper_tips(mts.thick_wing_mesh(n_c=8, nspan=12, span=2.0, root_chord=1.0, taper=1.0,
+                                                 sweep_deg=0.0, twist_deg=0.0, camber=0.0,
+                                                 thickness=0.12), 0.3)
+        t = np.ptp(flat[:, :, 2], axis=0)                          # before the pitch
         self.assertEqual(t[0], 0.0); self.assertLess(t[1], t[6])
         self.assertAlmostEqual(t[1] / t[-2], 1.0, places=12)      # symmetric ends
         cl0 = tpw.get_loads(tpw.solve(self.wing(False, 0.3)[0], wake="frozen"))["resultants"]["CL"]
