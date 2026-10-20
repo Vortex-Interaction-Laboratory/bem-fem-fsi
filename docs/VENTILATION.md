@@ -177,8 +177,27 @@ strips into `assemble_system` exactly as it folds the trailing-edge strips. The
 orientation is fixed by the corner, not chosen: the sheet's last strip is the
 trailing-edge Kutta pair of the tip strip, so its corner filament cancels the
 trailing-edge wake's and the tip vortex leaves along the whole chord. The flipped
-orientation gives a negative jump and less lift. The sheets are steady and frozen;
-`relax_wake` and `shed_and_project` refuse them.
+orientation gives a negative jump and less lift. The sheets are steady; they are
+relaxed with the trailing-edge wake (below) but `shed_and_project` refuses them.
+
+**Relaxation.** `relax_wake` (and `tip_wake.solve_steady(wake='relax')` on a wing
+without free surface) remarches every sheet in the field of all of them; the body
+ring edges on a shedding tip line are left out of that velocity, as the
+trailing-edge ones are, each tip sheet's corner filament is pinned back on the
+trailing-edge wake's, and the image tip sheet is projected like the image wake.
+The first segment of every filament follows the velocity at row 1, not the one at
+row 0: row 0 is on the body edge, where the discrete velocity is the singular
+surface limit (almost normal to the onset on a straight wing; a 0.68 spanwise
+component on a 45 deg swept wing, whose relaxed wake then folds and oscillates,
+`CL` 0.01 to 0.12 against 0.125 frozen). This changes the relaxed wake without tip
+sheets too. The vendored filament core, 0.2 x the spanwise spacing, is 0.006 c on
+an `AR_h = 0.5` strut of 16 strips, and the rolled-up tip sheet then explodes
+(`CL` 1.65 against 0.20 frozen at 12.5 deg); `tip_wake.set_core(fluid, 0.05)`
+gives the chord-based core of the vortex-lattice codes and a clean spiral. Even so
+the steady relaxation of a tip sheet does not settle on stubby geometries (AR 1
+wing, `AR_h = 0.5` strut: isolated sweeps more than 10 % off): take the median
+over the last sweeps. Relaxation moves the wetted `CL` by less than 1.3 % without
+tip sheets and by 3 % on average with them (comparison_report v4).
 
 **The pinched tip is a blunt edge in the limit, and a sheet shed from it vanishes
 under refinement.** The pinch closes the section within one strip, a wedge whose
