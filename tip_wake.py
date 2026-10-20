@@ -240,6 +240,20 @@ def node_velocities(fluid):
     return np.split(v, sizes)
 
 
+def set_core(fluid, core):
+    """Give every sheet the filament core `core` (in place). -> fluid
+
+    The vendored core is RC_WAKE_FRACTION times the spanwise spacing: 0.006 c on
+    a strut of AR_h 0.5 with 16 strips, and it only enters the convection. With a
+    tip sheet that rolls up, filaments then pass within a core of one another and
+    the relaxed lift explodes (CL 1.65 against 0.20 frozen at 12.5 deg); a core
+    on the chord, as the vortex-lattice codes use (0.05 c), keeps it bounded.
+    """
+    for w in sheets(fluid):
+        w["core"] = float(core)
+    return fluid
+
+
 def pin_corners(fluid):
     """Put each tip sheet's corner filament back on the trailing-edge wake's (in place)."""
     te = fluid["wake"]["nodes"]
