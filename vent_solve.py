@@ -450,22 +450,43 @@ def relax_wake(fluid, vent, max_iter=MAX_WAKE_ITER, tol=WAKE_TOL, sign=-1.0):
     body, which is right for the immersed half and wrong for the image half,
     whose position is not a degree of freedom. So each sweep solves, convects and
     then PROJECTS the image wake back onto the mirror of the real one.
+
+    Tip sheets, when shed, are convected with the trailing-edge wake in the field
+    of all of them (tip_wake, section 5), and the image tip sheet is projected
+    like the image wake.
     """
-    if fluid.get("tip_wakes"):
-        raise NotImplementedError("tip sheets are frozen: relax the wake without "
-                                  "tip shedding, or solve with wake='frozen'")
+    tips = bool(fluid.get("tip_wakes"))
     for _ in range(max(int(max_iter), 1)):
         fluid = solve_wetted(fluid, vent, "frozen", sign)
         if fluid["wake"] is None:
             break
-        v_nodes = tpw.wake_node_velocity(fluid)
-        moved = tpw.relax_wake_step(fluid["wake"], v_nodes, 0.5, fluid["x_near"])
+        if tips:
+            moved = tw.relax_step(fluid, tw.node_velocities(fluid), 0.5)
+        else:
+            v_nodes = tpw.wake_node_velocity(fluid)
+            moved = tpw.relax_wake_step(fluid["wake"], v_nodes, 0.5, fluid["x_near"])
         vm.symmetrise_wake(fluid["wake"], vent)
+        symmetrise_tips(fluid, vent)
         fluid["wake_version"] += 1
         if moved is not None and float(np.max(np.abs(moved))) \
                 < tol * fluid["chord_mean"]:
             break
     return solve_wetted(fluid, vent, "frozen", sign)
+
+
+def symmetrise_tips(fluid, vent):
+    """Project the image tip sheet onto the mirror of the immersed one (in place).
+
+    The immersed tip is span node 0 and its sheet runs leading edge to trailing
+    edge; the image tip, span node nspan, runs the other way, so its nodes are the
+    mirror of the immersed sheet's taken in reverse order along the chord.
+    """
+    tips = {t["side"]: t["wake"] for t in fluid.get("tip_wakes") or []}
+    if not vent["image"] or 0 not in tips or -1 not in tips:
+        return
+    image = np.array(tips[0]["nodes"][:, ::-1, :])
+    image[..., vm.DEPTH_AXIS] = 2.0 * vent["y_fs"] - image[..., vm.DEPTH_AXIS]
+    tips[-1]["nodes"] = image
 
 
 def shed_and_project(fluid, vent, dt, nmax=None):

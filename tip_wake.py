@@ -19,9 +19,11 @@ main().
     3 the sheets    one vendored-format wake per tip
     4 the fold      extra columns for assemble_system, the strength sync, and a
                     steady solve for a wing without free surface
-    5 main          a smoke test
+    5 relaxation    the node velocities of every sheet, one streamline remarch
+                    of all of them, and the relaxed steady solve of a wing
+    6 main          a smoke test
 
-Three decisions are worth stating before the code.
+Four decisions are worth stating before the code.
 
 **The sheet is a vendored wake dictionary.** Its "span" runs along the tip chord,
 from the leading edge to the trailing edge, and its rows run downstream; each
@@ -39,10 +41,15 @@ is the opposite of the wake's: the concentrated tip vortex is removed and its
 circulation leaves through the side edge instead, strip by strip. The span-node 0
 tip is ordered leading edge to trailing edge, the span-node nspan tip the reverse.
 
-**Steady and frozen only.** The sheets are straight along the onset and are not
-relaxed, shed or projected: the ventilated comparisons use a frozen wake, and an
-image tip sheet would need the projection `vent_mesh.symmetrise_wake` gives the
-trailing-edge wake before it could be convected.
+**Relaxed together with the trailing-edge wake, or not at all.** The sheets start
+straight along the onset. Relaxation remarches every sheet along the velocity of
+the whole field - body, sources, trailing-edge wake and every tip sheet - and
+then pins the corner filament of each tip sheet back onto the trailing-edge
+wake's, so the cancellation at the corner survives the convection. The body ring
+edges lying on a shedding tip line are left out of that velocity, as the vendored
+code leaves out the trailing-edge ones: they cancel the sheet's first row, which
+is never emitted. A free-surface image sheet is projected, not convected, by
+`vent_solve`. The sheets are not shed in a march.
 """
 
 # --------------------------------------------------------------- 1 imports
@@ -158,12 +165,17 @@ def sync_strengths(fluid, mu):
         tpw.set_bound_strengths(t["wake"], mu, t["k_up"], t["k_low"])
 
 
-def solve_steady(state):
-    """One steady solve of a wing with no free surface, tip sheets folded in. -> state
+def solve_steady(state, wake="frozen"):
+    """Steady solve of a wing with no free surface, tip sheets folded in. -> state
 
-    The vendored solve_once with the fold extended; frozen wake geometry (the tip
-    sheets are not relaxed). tpw.get_loads then reads the strengths as usual.
+    wake='frozen' is the vendored solve_once with the fold extended, on the
+    current wake geometry; 'relax' iterates it with section 5. tpw.get_loads then
+    reads the strengths as usual.
     """
+    if wake == "relax":
+        return relax_steady(state)
+    if wake != "frozen":
+        raise ValueError(f"unknown wake mode '{wake}'; choose 'frozen' or 'relax'")
     pan = state["panels"]
     if state["blocks"] is None or state["blocks_version"] != state["geom_version"]:
         state["blocks"] = tpw.assemble_body(pan)
@@ -181,7 +193,98 @@ def solve_steady(state):
     return state
 
 
-# ------------------------------------------------------------------ 5 main
+# ----------------------------------------------------------- 5 relaxation
+
+def sheets(fluid):
+    """The trailing-edge wake followed by the tip sheets. -> list of wake dicts"""
+    return [fluid["wake"]] + [t["wake"] for t in fluid.get("tip_wakes") or []]
+
+
+def body_segments_open(fluid):
+    """Body ring segments without the edges lying on a shedding tip line.
+
+    tpw.body_segments already drops the trailing-edge edges, which cancel the
+    trailing-edge wake's first row; here the tip-line edges go the same way, for
+    the same reason. With no tip sheets this is tpw.body_segments unchanged.
+    """
+    p1, p2, g, core = tpw.body_segments(fluid["panels"], fluid["mu"])
+    tips = fluid.get("tip_wakes") or []
+    if not tips:
+        return p1, p2, g, core
+    scale = 1e-9 * max(float(np.abs(fluid["panels"]["points"]).max()), 1.0)
+    on = np.zeros(len(p1), dtype=bool)
+    for t in tips:
+        line = t["wake"]["nodes"][0]                        # the tip line, row 0
+        d1 = np.linalg.norm(p1[:, None, :] - line[None], axis=2).min(axis=1)
+        d2 = np.linalg.norm(p2[:, None, :] - line[None], axis=2).min(axis=1)
+        on |= (d1 < scale) & (d2 < scale)
+    keep = ~on
+    return p1[keep], p2[keep], g[keep], core[keep]
+
+
+def node_velocities(fluid):
+    """Advection velocity at the nodes of every sheet. -> list, one (n, 3) per sheet
+
+    tpw.wake_node_velocity with the tip sheets among both the targets and the
+    sources: onset + sources + body rings + every sheet's segments.
+    """
+    pan, ws = fluid["panels"], sheets(fluid)
+    pts = np.concatenate([w["nodes"].reshape(-1, 3) for w in ws])
+    v = fluid["onset"](pts) + tpw.source_velocity(pts, pan["corners"], fluid["sigma"])
+    segs = [body_segments_open(fluid)] + [tpw.wake_segments(w, fluid["onset"]) for w in ws]
+    p1, p2, g, core = (np.concatenate([s[i] for s in segs]) for i in range(4))
+    v = v + tpw.induced_velocity(pts, p1, p2, g, core)
+    sizes = np.cumsum([w["nodes"].reshape(-1, 3).shape[0] for w in ws])[:-1]
+    return np.split(v, sizes)
+
+
+def pin_corners(fluid):
+    """Put each tip sheet's corner filament back on the trailing-edge wake's (in place)."""
+    te = fluid["wake"]["nodes"]
+    for t in fluid.get("tip_wakes") or []:
+        nodes = t["wake"]["nodes"]
+        if t["side"] == 0:                     # leading edge -> trailing edge
+            nodes[:, -1] = te[:, 0]
+        else:                                  # trailing edge -> leading edge
+            nodes[:, 0] = te[:, -1]
+
+
+def relax_step(fluid, v_list, omega):
+    """One under-relaxed streamline remarch of every sheet. -> max near-field move
+
+    v_list is node_velocities(fluid); row 0 of each sheet stays pinned on its
+    edge, as in tpw.relax_wake_step, and the corner filaments are re-joined.
+    """
+    delta = 0.0
+    for w, v in zip(sheets(fluid), v_list):
+        delta = max(delta, tpw.relax_wake_step(w, v, omega, fluid["x_near"]))
+    pin_corners(fluid)
+    return delta
+
+
+def relax_steady(state, max_iter=None, tol=None, omega=None):
+    """Steady solve with every sheet relaxed, wing without free surface. -> state
+
+    The vendored relaxation loop (tpw.solve, wake='relax') with the tip sheets in
+    the field and among the convected nodes; without tip sheets it IS tpw.solve.
+    """
+    max_iter = tpw.MAX_ITER if max_iter is None else max_iter
+    tol = tpw.TOL if tol is None else tol
+    omega = tpw.OMEGA if omega is None else omega
+    if not state.get("tip_wakes"):
+        return tpw.solve(state, wake="relax", max_wake_iter=max_iter)
+    for it in range(max_iter):
+        solve_steady(state)
+        delta = relax_step(state, node_velocities(state), omega)
+        state["wake_version"] += 1
+        state["residuals"].update(wake_disp_chords=delta / state["chord_mean"],
+                                  iterations=it + 1)
+        if delta < tol * state["chord_mean"]:
+            break
+    return solve_steady(state)
+
+
+# ------------------------------------------------------------------ 6 main
 
 def main():
     import freewake_kernels as fk

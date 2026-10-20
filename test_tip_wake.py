@@ -88,15 +88,31 @@ class TestTipFold(unittest.TestCase):
             _, b = strut(True, regime)
             self.assertGreater(b["resultants"]["CL"], 1.05 * a["resultants"]["CL"])
 
-    def test_the_relaxed_wake_refuses_tip_sheets(self):
-        fluid, _ = strut(True)
+    def _vent(self, fluid):
         points = fluid["panels"]["points"]
         maps = vm.mirror_maps(points.shape, image=True)
-        vent = vcv.build_vent(maps, vm.half_points(points, maps), h=1.0, chord=1.0,
+        return vcv.build_vent(maps, vm.half_points(points, maps), h=1.0, chord=1.0,
                               u_ref=1.0, alpha_rad=np.radians(10.0), rho=1000.0,
                               fn_h=2.5, regime="FW")
+
+    def test_the_relaxed_tip_sheets_stay_joined_and_mirrored(self):
+        fluid, _ = strut(True)
+        vent = self._vent(fluid)
+        before = [w["nodes"].copy() for w in tw.sheets(fluid)]
+        fluid = vsl.relax_wake(fluid, vent, max_iter=3)
+        te, (a, b) = fluid["wake"]["nodes"], [t["wake"]["nodes"] for t in fluid["tip_wakes"]]
+        self.assertGreater(float(np.abs(a - before[1]).max()), 1e-3)      # it moved
+        self.assertTrue(np.array_equal(a[0], before[1][0]))               # row 0 pinned
+        self.assertTrue(np.array_equal(a[:, -1], te[:, 0]))               # corners joined
+        self.assertTrue(np.array_equal(b[:, 0], te[:, -1]))
+        image = a[:, ::-1].copy(); image[..., vm.DEPTH_AXIS] *= -1.0
+        self.assertTrue(np.allclose(b, image, rtol=0, atol=1e-14))        # projected image
+        self.assertLess(vsl.antisymmetry_residual(fluid, vent)["mu"], 1e-10)
+
+    def test_the_march_still_refuses_tip_sheets(self):
+        fluid, _ = strut(True)
         with self.assertRaises(NotImplementedError):
-            vsl.relax_wake(fluid, vent)
+            vsl.shed_and_project(fluid, self._vent(fluid), 0.1)
 
 
 class TestTaper(unittest.TestCase):
@@ -132,6 +148,24 @@ class TestWing(unittest.TestCase):
         a, _ = self.wing(False); b, _ = self.wing(False)
         tpw.solve(a, wake="frozen"); tw.solve_steady(b)
         self.assertTrue(np.allclose(a["mu"], b["mu"], rtol=0, atol=1e-12))
+
+    def test_without_sheets_the_relaxed_solve_is_the_vendored_one(self):
+        a, _ = self.wing(False); b, _ = self.wing(False)
+        tpw.solve(a, wake="relax", max_wake_iter=4); tw.relax_steady(b, max_iter=4)
+        self.assertTrue(np.array_equal(a["wake"]["nodes"], b["wake"]["nodes"]))
+        self.assertTrue(np.allclose(a["mu"], b["mu"], rtol=0, atol=1e-12))
+
+    def test_the_relaxed_wing_sheets_roll_up_both_tips(self):
+        st, _ = self.wing(True, taper=0.3)
+        tw.relax_steady(st, max_iter=4)
+        te, (a, b) = st["wake"]["nodes"], [t["wake"]["nodes"] for t in st["tip_wakes"]]
+        self.assertTrue(np.array_equal(a[:, -1], te[:, 0]))
+        self.assertTrue(np.array_equal(b[:, 0], te[:, -1]))
+        mirror = b[:, ::-1].copy(); mirror[..., 1] *= -1.0                 # span is y, centred
+        # the vendored relaxed wake itself is mirror-symmetric only to ~4e-2 chords here
+        # (fixed W1-W3 quad diagonal); the sheets follow it to ~4e-4
+        self.assertTrue(np.allclose(a, mirror, rtol=0, atol=1e-2))
+        self.assertTrue(np.isfinite(tpw.get_loads(st)["resultants"]["CL"]))
 
     def test_both_wing_tips_shed_and_taper(self):
         st, _ = self.wing(True, taper=0.3)
