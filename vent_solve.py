@@ -451,20 +451,16 @@ def relax_wake(fluid, vent, max_iter=MAX_WAKE_ITER, tol=WAKE_TOL, sign=-1.0):
     whose position is not a degree of freedom. So each sweep solves, convects and
     then PROJECTS the image wake back onto the mirror of the real one.
 
-    Tip sheets, when shed, are convected with the trailing-edge wake in the field
-    of all of them (tip_wake, section 5), and the image tip sheet is projected
-    like the image wake.
+    The convection is tip_wake's (section 5): tip sheets, when shed, move with the
+    trailing-edge wake in the field of all of them, the image tip sheet is
+    projected like the image wake, and the first segment of every filament
+    follows the velocity just behind its edge, not the singular one on it.
     """
-    tips = bool(fluid.get("tip_wakes"))
     for _ in range(max(int(max_iter), 1)):
         fluid = solve_wetted(fluid, vent, "frozen", sign)
         if fluid["wake"] is None:
             break
-        if tips:
-            moved = tw.relax_step(fluid, tw.node_velocities(fluid), 0.5)
-        else:
-            v_nodes = tpw.wake_node_velocity(fluid)
-            moved = tpw.relax_wake_step(fluid["wake"], v_nodes, 0.5, fluid["x_near"])
+        moved = tw.relax_step(fluid, tw.node_velocities(fluid), 0.5)
         vm.symmetrise_wake(fluid["wake"], vent)
         symmetrise_tips(fluid, vent)
         fluid["wake_version"] += 1

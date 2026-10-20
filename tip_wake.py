@@ -45,7 +45,9 @@ tip is ordered leading edge to trailing edge, the span-node nspan tip the revers
 straight along the onset. Relaxation remarches every sheet along the velocity of
 the whole field - body, sources, trailing-edge wake and every tip sheet - and
 then pins the corner filament of each tip sheet back onto the trailing-edge
-wake's, so the cancellation at the corner survives the convection. The body ring
+wake's, so the cancellation at the corner survives the convection. The first
+segment of every filament, trailing-edge or tip, follows the velocity just behind
+its edge rather than the singular one on it (see relax_step). The body ring
 edges lying on a shedding tip line are left out of that velocity, as the vendored
 code leaves out the trailing-edge ones: they cancel the sheet's first row, which
 is never emitted. A free-surface image sheet is projected, not convected, by
@@ -254,10 +256,21 @@ def relax_step(fluid, v_list, omega):
 
     v_list is node_velocities(fluid); row 0 of each sheet stays pinned on its
     edge, as in tpw.relax_wake_step, and the corner filaments are re-joined.
+
+    The first segment of each filament leaves its edge along the velocity at
+    row 1, not at row 0. Row 0 lies ON the body edge, where the discrete velocity
+    is the singular surface limit of the rings and sources rather than the flow
+    leaving the edge: on a straight wing at 2 deg it points almost normal to the
+    onset, (-0.02, 0, 0.07), and on a 45 deg swept wing it has a spanwise
+    component of 0.68, which folds the wake and makes the vendored relaxation
+    oscillate without converging (CL between 0.01 and 0.12 against 0.125 frozen).
     """
     delta = 0.0
     for w, v in zip(sheets(fluid), v_list):
-        delta = max(delta, tpw.relax_wake_step(w, v, omega, fluid["x_near"]))
+        v = np.array(v, dtype=float).reshape(w["nodes"].shape)
+        if len(v) > 1:
+            v[0] = v[1]
+        delta = max(delta, tpw.relax_wake_step(w, v.reshape(-1, 3), omega, fluid["x_near"]))
     pin_corners(fluid)
     return delta
 
@@ -266,13 +279,16 @@ def relax_steady(state, max_iter=None, tol=None, omega=None):
     """Steady solve with every sheet relaxed, wing without free surface. -> state
 
     The vendored relaxation loop (tpw.solve, wake='relax') with the tip sheets in
-    the field and among the convected nodes; without tip sheets it IS tpw.solve.
+    the field and among the convected nodes, and the first segment of every
+    filament along the velocity just behind its edge (relax_step). With or
+    without tip sheets, so that the two are relaxed by the same rule.
     """
     max_iter = tpw.MAX_ITER if max_iter is None else max_iter
     tol = tpw.TOL if tol is None else tol
     omega = tpw.OMEGA if omega is None else omega
-    if not state.get("tip_wakes"):
-        return tpw.solve(state, wake="relax", max_wake_iter=max_iter)
+    if state["blocks"] is None or state["blocks_version"] != state["geom_version"]:
+        state["blocks"] = tpw.assemble_body(state["panels"])
+        state["blocks_version"] = state["geom_version"]
     for it in range(max_iter):
         solve_steady(state)
         delta = relax_step(state, node_velocities(state), omega)

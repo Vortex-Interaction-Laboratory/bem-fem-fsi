@@ -149,11 +149,20 @@ class TestWing(unittest.TestCase):
         tpw.solve(a, wake="frozen"); tw.solve_steady(b)
         self.assertTrue(np.allclose(a["mu"], b["mu"], rtol=0, atol=1e-12))
 
-    def test_without_sheets_the_relaxed_solve_is_the_vendored_one(self):
-        a, _ = self.wing(False); b, _ = self.wing(False)
-        tpw.solve(a, wake="relax", max_wake_iter=4); tw.relax_steady(b, max_iter=4)
-        self.assertTrue(np.array_equal(a["wake"]["nodes"], b["wake"]["nodes"]))
-        self.assertTrue(np.allclose(a["mu"], b["mu"], rtol=0, atol=1e-12))
+    def test_the_relaxed_wake_leaves_the_swept_edge_downstream(self):
+        # the vendored rule (first segment along the velocity ON the edge) folds
+        # this wake spanwise and oscillates; the rule of relax_step does not
+        pts = mts.thick_wing_mesh(n_c=8, nspan=12, span=4.0, root_chord=1.0, taper=1.0,
+                                  sweep_deg=45.0, twist_deg=0.0, camber=0.0, thickness=0.12)
+        pts = tpw.pitch_mesh(pts, np.radians(2.0))
+        onset = lambda p: np.tile([1.0, 0.0, 0.0], (len(np.atleast_2d(p)), 1))
+        st = tpw.init_state(pts, onset, u_ref=1.0, config={"nwake": 24, "wake_length_spans": 0.75})
+        cl0 = tpw.get_loads(tw.solve_steady(st))["resultants"]["CL"]
+        tw.relax_steady(st, max_iter=8)
+        first = st["wake"]["nodes"][1] - st["wake"]["nodes"][0]
+        first /= np.linalg.norm(first, axis=1, keepdims=True)
+        self.assertGreater(first[:, 0].min(), 0.95)
+        self.assertLess(abs(tpw.get_loads(st)["resultants"]["CL"] / cl0 - 1.0), 0.02)
 
     def test_the_relaxed_wing_sheets_roll_up_both_tips(self):
         st, _ = self.wing(True, taper=0.3)
