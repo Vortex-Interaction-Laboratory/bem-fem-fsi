@@ -199,6 +199,12 @@ wing, `AR_h = 0.5` strut: isolated sweeps more than 10 % off): take the median
 over the last sweeps. Relaxation moves the wetted `CL` by less than 1.3 % without
 tip sheets and by 3 % on average with them (comparison_report v4).
 
+**Compiled kernels.** The relaxation spends its time in three vendored numpy kernels (segment Biot-Savart,
+body source velocity, wake doublet potential). `fast_kernels.py` re-implements them with numba, same formulas and
+floors, no fastmath: results agree to round-off (1e-15 on the relaxed `CL`, `test_fast_kernels.py`). One sweep of the
+16-strip, `n_c = 24` strut with tip sheets on one thread: 11.3 s -> 2.8 s wetted, 31 s -> 10 s ventilated, where the
+rest is the cavity fixed point's dense solves. `BEM_NUMBA=0` restores the vendored kernels.
+
 **The pinched tip is a blunt edge in the limit, and a sheet shed from it vanishes
 under refinement.** The pinch closes the section within one strip, a wedge whose
 angle opens towards 180 degrees as the strips narrow, and a blunt edge supports no

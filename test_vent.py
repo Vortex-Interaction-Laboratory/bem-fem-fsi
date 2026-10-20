@@ -413,7 +413,9 @@ class TestImage(unittest.TestCase):
         mu_wall = wall["mu"].copy()
         fluid2, _, _, vent2, _ = strut_case(alpha=12.0)
         plain = tpw.solve(fluid2, wake="frozen")
-        self.assertEqual(float(np.abs(mu_wall - plain["mu"]).max()), 0.0)
+        # bit for bit with the vendored kernels; to round-off when the compiled ones (fast_kernels) are on
+        import fast_kernels
+        self.assertLessEqual(float(np.abs(mu_wall - plain["mu"]).max()), 1e-13 if fast_kernels.ENABLED else 0.0)
         del vent2
 
     def test_the_two_images_differ_in_exactly_one_sign_and_in_the_loading(self):

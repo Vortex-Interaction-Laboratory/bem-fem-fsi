@@ -59,6 +59,7 @@ is never emitted. A free-surface image sheet is projected, not convected, by
 import numpy as np
 
 import thick_panel_wing as tpw
+import fast_kernels as fkn            # compiled drop-ins of the wake kernels (vendored ones if BEM_NUMBA=0)
 
 
 # --------------------------------------------------------------- 2 the edge
@@ -155,7 +156,7 @@ def fold_arrays(fluid, colloc, p_bound, phi_known, k_up, k_low):
     cols, kus, kls = [p_bound], [np.asarray(k_up)], [np.asarray(k_low)]
     phi = np.zeros(len(colloc)) if phi_known is None else np.array(phi_known, float)
     for t in tips:
-        pb, pk = tpw.wake_influence(colloc, t["wake"], fluid["onset"])
+        pb, pk = fkn.wake_influence(colloc, t["wake"], fluid["onset"])
         cols.append(pb); kus.append(t["k_up"]); kls.append(t["k_low"])
         phi = phi + pk
     return np.hstack(cols), phi, np.concatenate(kus), np.concatenate(kls)
@@ -183,7 +184,7 @@ def solve_steady(state, wake="frozen"):
         state["blocks"] = tpw.assemble_body(pan)
         state["blocks_version"] = state["geom_version"]
     sigma = tpw.source_strengths(pan["normals"], state["u_rel"])
-    pb, pk = tpw.wake_influence(pan["centroids"], state["wake"], state["onset"])
+    pb, pk = fkn.wake_influence(pan["centroids"], state["wake"], state["onset"])
     pb, pk, k_up, k_low = fold_arrays(state, pan["centroids"], pb, pk, pan["k_up"], pan["k_low"])
     n = len(sigma)
     a_mat, rhs = tpw.assemble_system(state["blocks"]["D"], state["blocks"]["S"], pb, pk, k_up, k_low,
@@ -232,10 +233,10 @@ def node_velocities(fluid):
     """
     pan, ws = fluid["panels"], sheets(fluid)
     pts = np.concatenate([w["nodes"].reshape(-1, 3) for w in ws])
-    v = fluid["onset"](pts) + tpw.source_velocity(pts, pan["corners"], fluid["sigma"])
+    v = fluid["onset"](pts) + fkn.source_velocity(pts, pan["corners"], fluid["sigma"])
     segs = [body_segments_open(fluid)] + [tpw.wake_segments(w, fluid["onset"]) for w in ws]
     p1, p2, g, core = (np.concatenate([s[i] for s in segs]) for i in range(4))
-    v = v + tpw.induced_velocity(pts, p1, p2, g, core)
+    v = v + fkn.induced_velocity(pts, p1, p2, g, core)
     sizes = np.cumsum([w["nodes"].reshape(-1, 3).shape[0] for w in ws])[:-1]
     return np.split(v, sizes)
 

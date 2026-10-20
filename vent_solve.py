@@ -70,6 +70,7 @@ import vent_cavity as vcv
 import vent_loads as vnl
 import vent_section as vs
 import tip_wake as tw
+import fast_kernels as fkn
 
 MAX_WAKE_ITER = 12             # wake relaxation sweeps; the vendored default
 WAKE_TOL = 1e-4                # wake displacement, in chords
@@ -97,7 +98,7 @@ def _system(fluid, vent, wake_mode):
     p_bound, phi_known = (None, None)
     k_up, k_low = pan["k_up"], pan["k_low"]
     if fluid["wake"] is not None and wake_mode != "none":
-        p_bound, phi_known = tpw.wake_influence(pan["centroids"], fluid["wake"],
+        p_bound, phi_known = fkn.wake_influence(pan["centroids"], fluid["wake"],
                                                 fluid["onset"])
         # tip sheets, when shed, are more strips of the same fold
         p_bound, phi_known, k_up, k_low = tw.fold_arrays(
