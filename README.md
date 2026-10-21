@@ -17,7 +17,10 @@ free surface enters as an exact linearised image, a gas cavity forms when air
 reaches separated sub-atmospheric flow, its extent and thickness are solved rather
 than prescribed, and the wetted and ventilated states are bi-stable, so a cavity
 survives to incidences well below the one that formed it. Following Harwood,
-Young & Ceccio, J. Fluid Mech. 800 (2016) 5-56.
+Young & Ceccio, J. Fluid Mech. 800 (2016) 5-56. Optionally, `tip_wake.py` sheds a
+doublet sheet from the free tip (with `vent_mesh.strut_mesh(tip_taper=0.1)`, a
+sharp tip the sheet converges on) and relaxes it with the trailing-edge wake; see
+[docs/VENTILATION.md](docs/VENTILATION.md), "Tip shedding".
 
 The fluid solver is the companion repository
 [time-dependent-free-wake-panel-method](https://github.com/ignaziomviola/time-dependent-free-wake-panel-method),
@@ -32,7 +35,9 @@ and the thin lifting-surface ancestors are in
 
 Python 3 with numpy; matplotlib is needed only for the figures and is imported
 lazily, so importing any solver as a library pulls in no figure backend. scipy
-is deliberately not used, on either side.
+is deliberately not used, on either side. numba is optional: when installed,
+`fast_kernels.py` compiles the wake-relaxation kernels (same results to round-off,
+about 4x faster); `BEM_NUMBA=0` keeps the vendored numpy kernels.
 
 ```bash
 python3 -m pip install --user numpy matplotlib
@@ -189,7 +194,7 @@ All four are measured at round-off in [docs/COUPLING.md](docs/COUPLING.md).
 | structural gates | patch test, rigid-body modes and mass properties exact; cantilever and frequencies within 1-2% of the beam solution |
 | free surface | potential zero on the free-surface plane to 1.7e-16; image strengths antisymmetric to 2.4e-14 |
 | sectional cavity model | the washout boundary (4.5) recovered from its own derivation to 2.1e-16; the lift slope's two analytic limits exact |
-| ventilated loads | lift falls to 0.55 of the wetted value, the centre of pressure moves to 0.19c, and the cavity is longest at the waterline - trends verified, magnitudes reported |
+| ventilated loads | lift falls to 0.52 - 0.44 of the wetted value, the centre of pressure moves aft to 0.09 - 0.26c, and the cavity is longest at the waterline - trends verified, magnitudes reported |
 | hysteresis | the same incidence and Froude number give a wetted or a ventilated state depending only on history |
 
 Full tables, with what each number means and where it does not agree, are in
@@ -230,6 +235,8 @@ python3 test_fsi.py                       # coupling fast set, ~1 s
 FSI_SLOW=1 python3 test_fsi.py            # + coupled physics, ~23 s
 python3 test_vent.py                      # ventilation fast set, ~7 s
 VENT_SLOW=1 python3 test_vent.py          # + coupled ventilation, ~40 s
+python3 test_tip_wake.py                  # tip sheets, tip taper, steady wing solve
+python3 test_fast_kernels.py              # numba kernels against the vendored ones
 python3 test_vendored.py                  # the fluid copies are unmodified
 python3 test_thick_panel_wing.py          # vendored steady suite, unchanged
 python3 test_unsteady_wing.py             # vendored unsteady suite, unchanged

@@ -201,7 +201,8 @@ tip sheets and by 3 % on average with them (comparison_report v4).
 
 **Compiled kernels.** The relaxation spends its time in three vendored numpy kernels (segment Biot-Savart,
 body source velocity, wake doublet potential). `fast_kernels.py` re-implements them with numba, same formulas and
-floors, no fastmath: results agree to round-off (1e-15 on the relaxed `CL`, `test_fast_kernels.py`). One sweep of the
+floors, no fastmath: the kernels agree to 1e-12 (`test_fast_kernels.py`) and the relaxed `CL` to round-off (strut
+`AR_h = 1`, 5 deg, tip sheets, 30 sweeps: 0.11637409648146918 against 0.11637409648146896 vendored). One sweep of the
 16-strip, `n_c = 24` strut with tip sheets on one thread: 11.3 s -> 2.8 s wetted, 31 s -> 10 s ventilated, where the
 rest is the cavity fixed point's dense solves. `BEM_NUMBA=0` restores the vendored kernels.
 
@@ -225,7 +226,8 @@ relative error without the two outlier pairs `(0.5, 1.5)` and `(1.5, 1.0)`: wett
 16.5 % (8 strips, `n_c = 12`, no tip shedding) and 10.4 % (16 strips, `n_c = 24`,
 tip shedding, `tip_taper = 0.1`); ventilated 42.6 % and 15.3 %, the latter with
 the caveat above. Both options are off by default and the default mesh and system
-are unchanged.
+are unchanged; the relaxed wake is not (first-segment rule above), nor is any
+ventilated solve (spanwise cavity speed, see the cavity's pressure below).
 
 ### The wake cannot be convected, and the drift it loses is the wave elevation
 
@@ -265,7 +267,16 @@ the total surface speed `q_c = u sqrt(1 + sigma_c)`, hence `mu` by integration
 from detachment along the panel's own tangent with the arc-floored spacing the
 vendored wrap stencil uses. Integrating along the chord instead puts the
 leading-edge panels badly wrong, because there the surface tangent is nearly
-normal to the chord.
+normal to the chord. The spanwise part of `q_c` is taken from the wetted
+baseline, not lagged from the cavity iterate: lagged, it closed a loop through
+the free surface (the prescribed `mu` does not vanish at the waterline, its jump
+to the negative image makes a spanwise velocity of order `mu/dy`, which lowers the
+chordwise speed and raises `mu` again), and the ventilated `CL` diverged under
+spanwise refinement (`AR_h = 1`, `Fn_h = 2.5`, 10 deg, `n_c = 12`: 0.132 / 0.79 /
+2.6 at 8 / 32 / 80 strips). From the baseline it is 0.122 / 0.126 / 0.130 / 0.131
+at 8 / 16 / 32 / 64 strips. Wetted results are unchanged; every ventilated solve
+moves. Not cured: at `alpha >= 16 deg` the ventilated load still drifts beyond
+about 16 strips (cavity reaching the trailing edge on most strips, ragged closure).
 
 **Thickness.** The unknown on a cavity panel is then the source strength, which is
 the cavity's transpiration, and the thickness follows by chordwise integration.
@@ -425,21 +436,24 @@ At `Fn_h = 2.5`, `AR_h = 1`:
 
 | alpha | CL wet | CL vent | ratio | e wet | e vent | Lc max | D/h | Phi |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 6 | +0.1391 | +0.0757 | 0.544 | 0.342 | 0.084 | 0.904 | 0.94 | 51.6 |
-| 10 | +0.2300 | +0.1322 | 0.575 | 0.339 | 0.144 | 0.976 | 0.94 | 50.4 |
-| 14 | +0.3183 | +0.1779 | 0.559 | 0.335 | 0.181 | 1.000 | 0.94 | 49.9 |
-| 18 | +0.4029 | +0.2191 | 0.544 | 0.329 | 0.186 | 1.000 | 0.94 | 49.9 |
+| 6 | +0.1391 | +0.0723 | 0.520 | 0.342 | 0.091 | 0.904 | 0.94 | 51.6 |
+| 10 | +0.2300 | +0.1222 | 0.531 | 0.339 | 0.160 | 0.976 | 0.94 | 50.4 |
+| 14 | +0.3183 | +0.1494 | 0.469 | 0.335 | 0.252 | 1.000 | 0.94 | 49.9 |
+| 18 | +0.4029 | +0.1791 | 0.445 | 0.329 | 0.263 | 1.000 | 0.94 | 49.9 |
 
-The lift ratio is about 0.55 throughout, a loss of some 45%. Breslin & Skalak
+The lift ratio falls from 0.52 to 0.44 with incidence, a loss of 48 to 56%. Breslin & Skalak
 report losses of up to 70% and the paper's figure 12 shows the same ordering, so
 the sign, the ordering and the magnitude to within a factor are what this
 comparison supports; the mechanism this model lacks is the cavity closure region,
 where the experiment's re-entrant jet removes suction over an area a
 prescribed-pressure cavity cannot place. **Reported, not verified.**
 
-The centre of pressure moves from about 0.33 to about 0.19 of the chord forward of
-mid-chord. The paper's figure 14 quotes 1/4 wetted and 3/16 = 0.1875
-supercavitating; **the ventilated value lands on 3/16**, and the wetted value sits
+The centre of pressure moves from about 0.33 of the chord forward of mid-chord
+wetted to 0.09 - 0.26 ventilated, growing with incidence. The paper's figure 14
+quotes 1/4 wetted and 3/16 = 0.1875 supercavitating; the ventilated value crosses
+3/16 between 10 and 14 deg rather than landing on it (it did, at 0.18 - 0.19, while
+the spanwise cavity speed was lagged; that value was not mesh converged either,
+see the cavity's pressure above), and the wetted value sits
 further forward than a thin foil's quarter chord because the loading of a
 low-aspect-ratio surface-piercing strut is concentrated forward.
 
@@ -471,11 +485,11 @@ At `Fn_h = 2.5`, `AR_h = 1`, stall angle 14.5 deg:
 
 | alpha | from wetted | from ventilated | bi-stable |
 | --- | --- | --- | --- |
-| 6 | FW, CL = +0.14403 | PV, CL = +0.07794 | yes |
-| 10 | FW, CL = +0.23801 | PV, CL = +0.13413 | yes |
-| 13 | FW, CL = +0.30657 | PV, CL = +0.16505 | yes |
-| 16 | PV, CL = +0.37296 | PV, CL = +0.19743 | no |
-| 20 | PV, CL = +0.45732 | PV, CL = +0.23459 | no |
+| 6 | FW, CL = +0.14403 | PV, CL = +0.07530 | yes |
+| 10 | FW, CL = +0.23801 | PV, CL = +0.12759 | yes |
+| 13 | FW, CL = +0.30657 | PV, CL = +0.13783 | yes |
+| 16 | PV, CL = +0.37296 | PV, CL = +0.16123 | no |
+| 20 | PV, CL = +0.45732 | PV, CL = +0.18467 | no |
 
 The conditions are identical along each row and only the history differs. Above
 the stall angle the flow incepts from either start, so the bi-stable band runs

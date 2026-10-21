@@ -190,7 +190,7 @@ def dynamic_mu(pan, frame, vent, weight, mu_wet, u_rel, v_span=None):
 
     The pressure inside the cavity is known, so Bernoulli fixes the total surface
     speed at q_c = u sqrt(1 + sigma_c); the chordwise component follows from it
-    with the spanwise component lagged, and
+    with the spanwise component taken from the wetted baseline, and
 
         dmu/ds = V_s - u_rel . s_hat
 
