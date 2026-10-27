@@ -69,6 +69,8 @@ import vent_mesh as vm
 import vent_cavity as vcv
 import vent_loads as vnl
 import vent_section as vs
+import tip_wake as tw
+import fast_kernels as fkn
 
 MAX_WAKE_ITER = 12             # wake relaxation sweeps; the vendored default
 WAKE_TOL = 1e-4                # wake displacement, in chords
@@ -94,11 +96,16 @@ def _system(fluid, vent, wake_mode):
         fluid["blocks"] = tpw.assemble_body(pan)
         fluid["blocks_version"] = fluid["geom_version"]
     p_bound, phi_known = (None, None)
+    k_up, k_low = pan["k_up"], pan["k_low"]
     if fluid["wake"] is not None and wake_mode != "none":
-        p_bound, phi_known = tpw.wake_influence(pan["centroids"], fluid["wake"],
+        p_bound, phi_known = fkn.wake_influence(pan["centroids"], fluid["wake"],
                                                 fluid["onset"])
+        # tip sheets, when shed, are more strips of the same fold
+        p_bound, phi_known, k_up, k_low = tw.fold_arrays(
+            fluid, pan["centroids"], p_bound, phi_known, k_up, k_low)
     return {"D": fluid["blocks"]["D"], "S": fluid["blocks"]["S"],
-            "p_bound": p_bound, "phi_known": phi_known}
+            "p_bound": p_bound, "phi_known": phi_known,
+            "k_up": k_up, "k_low": k_low}
 
 
 def image_sigma(pan, vent, u_rel, sign=-1.0):
@@ -136,7 +143,7 @@ def mixed_solve(fluid, vent, sys, sigma, unknown_type=None, mu_fixed=None):
         else np.asarray(unknown_type, dtype=np.int8)
     mu_fixed = np.zeros(n) if mu_fixed is None else np.asarray(mu_fixed, float)
     a_mat, rhs = tpw.assemble_system(sys["D"], sys["S"], sys["p_bound"],
-                                     sys["phi_known"], pan["k_up"], pan["k_low"],
+                                     sys["phi_known"], sys["k_up"], sys["k_low"],
                                      unknown_type, mu_fixed, sigma)
     x = np.linalg.solve(a_mat, rhs)
     mask = unknown_type == 1
@@ -151,6 +158,7 @@ def _commit_strengths(fluid, vent, mu, sigma):
     if fluid["wake"] is not None:
         tpw.set_bound_strengths(fluid["wake"], mu, fluid["panels"]["k_up"],
                                 fluid["panels"]["k_low"])
+        tw.sync_strengths(fluid, mu)
     fluid["vent_sign"] = -1.0 if vent["image"] else 0.0
     return fluid
 
@@ -182,7 +190,7 @@ def dynamic_mu(pan, frame, vent, weight, mu_wet, u_rel, v_span=None):
 
     The pressure inside the cavity is known, so Bernoulli fixes the total surface
     speed at q_c = u sqrt(1 + sigma_c); the chordwise component follows from it
-    with the spanwise component lagged, and
+    with the spanwise component taken from the wetted baseline, and
 
         dmu/ds = V_s - u_rel . s_hat
 
@@ -345,13 +353,20 @@ def solve_cavity(fluid, vent, rho=1.0, dphi_of_mu=None, wake="frozen",
     mu, sig, cav = mu_wet, sigma_wet, None
     first, flip, resid, flips, sign_prev = None, False, 0.0, 0, None
     iterations = 0
-    # the spanwise surface velocity, lagged one iteration: the dynamic condition
-    # fixes the total speed and the chordwise component follows from it, so the
-    # spanwise one has to come from somewhere. It converges in two iterations.
+    # the spanwise surface velocity: the dynamic condition fixes the total speed
+    # and the chordwise component follows from it, so the spanwise one has to
+    # come from somewhere. It is taken from the WETTED baseline, not lagged from
+    # the cavity iterate. Lagged, it closes a loop through the free surface: the
+    # prescribed doublet strength on a cavity reaching the waterline does not
+    # vanish there, so its jump to the negative image across one strip makes a
+    # spanwise velocity of order mu/dy; that velocity lowers the chordwise cavity
+    # speed, which makes mu larger still. The loop grows as the strips get
+    # narrower and the load diverged under spanwise refinement (CL x20 at 80
+    # strips, AR_h = 1). The wetted crossflow honours the image and is bounded.
     span_dir = np.asarray(pan["dual"])[:, 1, :]
     span_dir = span_dir / np.maximum(np.linalg.norm(span_dir, axis=1,
                                                     keepdims=True), 1e-30)
-    v_span = np.zeros(len(sigma_wet))
+    v_span = np.einsum("kc,kc->k", wet["v_surf"], span_dir)
     memory = (None, None)          # one step of secant memory on the closure
     for iterations in range(1, vent["sub_max"] + 1):
         weight, _ = vcv.mask_from_lengths(pan, frame, length, vent["alpha_rad"],
@@ -374,7 +389,6 @@ def solve_cavity(fluid, vent, rho=1.0, dphi_of_mu=None, wake="frozen",
         dphi = None if dphi_of_mu is None else dphi_of_mu(mu)
         fields = vnl.vent_pressure(pan, mu, fluid["u_rel"], vent["u_ref"], vent,
                                    weight, dphi_dt=dphi, rho=rho)
-        v_span = np.einsum("kc,kc->k", fields["v_surf"], span_dir)
         thick = vcv.thickness(pan, frame, sig, sigma_wet, weight, v_s)
         cav = dict(fields)
         cav.update({"weight": weight, "l_c": length.copy(), "thickness": thick,
@@ -437,19 +451,39 @@ def relax_wake(fluid, vent, max_iter=MAX_WAKE_ITER, tol=WAKE_TOL, sign=-1.0):
     body, which is right for the immersed half and wrong for the image half,
     whose position is not a degree of freedom. So each sweep solves, convects and
     then PROJECTS the image wake back onto the mirror of the real one.
+
+    The convection is tip_wake's (section 5): tip sheets, when shed, move with the
+    trailing-edge wake in the field of all of them, the image tip sheet is
+    projected like the image wake, and the first segment of every filament
+    follows the velocity just behind its edge, not the singular one on it.
     """
     for _ in range(max(int(max_iter), 1)):
         fluid = solve_wetted(fluid, vent, "frozen", sign)
         if fluid["wake"] is None:
             break
-        v_nodes = tpw.wake_node_velocity(fluid)
-        moved = tpw.relax_wake_step(fluid["wake"], v_nodes, 0.5, fluid["x_near"])
+        moved = tw.relax_step(fluid, tw.node_velocities(fluid), 0.5)
         vm.symmetrise_wake(fluid["wake"], vent)
+        symmetrise_tips(fluid, vent)
         fluid["wake_version"] += 1
         if moved is not None and float(np.max(np.abs(moved))) \
                 < tol * fluid["chord_mean"]:
             break
     return solve_wetted(fluid, vent, "frozen", sign)
+
+
+def symmetrise_tips(fluid, vent):
+    """Project the image tip sheet onto the mirror of the immersed one (in place).
+
+    The immersed tip is span node 0 and its sheet runs leading edge to trailing
+    edge; the image tip, span node nspan, runs the other way, so its nodes are the
+    mirror of the immersed sheet's taken in reverse order along the chord.
+    """
+    tips = {t["side"]: t["wake"] for t in fluid.get("tip_wakes") or []}
+    if not vent["image"] or 0 not in tips or -1 not in tips:
+        return
+    image = np.array(tips[0]["nodes"][:, ::-1, :])
+    image[..., vm.DEPTH_AXIS] = 2.0 * vent["y_fs"] - image[..., vm.DEPTH_AXIS]
+    tips[-1]["nodes"] = image
 
 
 def shed_and_project(fluid, vent, dt, nmax=None):
@@ -464,6 +498,9 @@ def shed_and_project(fluid, vent, dt, nmax=None):
     """
     if fluid["wake"] is None:
         return fluid, 0.0
+    if fluid.get("tip_wakes"):
+        raise NotImplementedError("tip sheets are steady and frozen; they are not "
+                                  "shed in a march")
     v_nodes = tpw.wake_node_velocity(fluid)
     tpw.shed(fluid["wake"], v_nodes, dt,
              v_shed=tpw.te_convection_velocity(fluid))

@@ -163,6 +163,72 @@ image is right. Flipping the sign gives the zero-Froude rigid wall.
 > there. `test_vent` asserts the bit-for-bit agreement so the hazard is on the
 > record rather than latent.
 
+### Tip shedding, and the tip that must stay sharp
+
+The vendored wake leaves the trailing edge only, so the loading of the strip next
+to the pinched free tip has to fall to zero inside that strip and leave the strut
+through the trailing-edge corner. `tip_wake.add_tip_wakes(fluid)` adds, as an
+option, a doublet sheet along each pinched tip chord (the free tip and its image),
+straight along the onset like the frozen trailing-edge wake. Chordwise strip `m`
+of the sheet carries the jump `mu_up - mu_low` of the two tip-strip panels at that
+station - the panel form of the vortex-lattice rule that a tip ring is shed with
+the circulation of the tip panel it leaves - and `vent_solve._system` folds its
+strips into `assemble_system` exactly as it folds the trailing-edge strips. The
+orientation is fixed by the corner, not chosen: the sheet's last strip is the
+trailing-edge Kutta pair of the tip strip, so its corner filament cancels the
+trailing-edge wake's and the tip vortex leaves along the whole chord. The flipped
+orientation gives a negative jump and less lift. The sheets are steady; they are
+relaxed with the trailing-edge wake (below) but `shed_and_project` refuses them.
+
+**Relaxation.** `relax_wake` (and `tip_wake.solve_steady(wake='relax')` on a wing
+without free surface) remarches every sheet in the field of all of them; the body
+ring edges on a shedding tip line are left out of that velocity, as the
+trailing-edge ones are, each tip sheet's corner filament is pinned back on the
+trailing-edge wake's, and the image tip sheet is projected like the image wake.
+The first segment of every filament follows the velocity at row 1, not the one at
+row 0: row 0 is on the body edge, where the discrete velocity is the singular
+surface limit (almost normal to the onset on a straight wing; a 0.68 spanwise
+component on a 45 deg swept wing, whose relaxed wake then folds and oscillates,
+`CL` 0.01 to 0.12 against 0.125 frozen). This changes the relaxed wake without tip
+sheets too. The vendored filament core, 0.2 x the spanwise spacing, is 0.006 c on
+an `AR_h = 0.5` strut of 16 strips, and the rolled-up tip sheet then explodes
+(`CL` 1.65 against 0.20 frozen at 12.5 deg); `tip_wake.set_core(fluid, 0.05)`
+gives the chord-based core of the vortex-lattice codes and a clean spiral. Even so
+the steady relaxation of a tip sheet does not settle on stubby geometries (AR 1
+wing, `AR_h = 0.5` strut: isolated sweeps more than 10 % off): take the median
+over the last sweeps. Relaxation moves the wetted `CL` by less than 1.3 % without
+tip sheets and by 3 % on average with them (comparison_report v4).
+
+**Compiled kernels.** The relaxation spends its time in three vendored numpy kernels (segment Biot-Savart,
+body source velocity, wake doublet potential). `fast_kernels.py` re-implements them with numba, same formulas and
+floors, no fastmath: the kernels agree to 1e-12 (`test_fast_kernels.py`) and the relaxed `CL` to round-off (strut
+`AR_h = 1`, 5 deg, tip sheets, 30 sweeps: 0.11637409648146918 against 0.11637409648146896 vendored). One sweep of the
+16-strip, `n_c = 24` strut with tip sheets on one thread: 11.3 s -> 2.8 s wetted, 31 s -> 10 s ventilated, where the
+rest is the cavity fixed point's dense solves. `BEM_NUMBA=0` restores the vendored kernels.
+
+**The pinched tip is a blunt edge in the limit, and a sheet shed from it vanishes
+under refinement.** The pinch closes the section within one strip, a wedge whose
+angle opens towards 180 degrees as the strips narrow, and a blunt edge supports no
+finite jump. At `AR_h = 1`, `Fn_h = 2.5`, `alpha = 10 deg`, `n_c = 12`, the wetted
+`CL` with tip shedding falls 0.2584 / 0.2454 / 0.2370 / 0.2351 at 8 / 16 / 32 / 48
+strips towards the value without it (0.2261). `strut_mesh(tip_taper=...)` thins the
+section linearly to zero over a fixed length above the tip, so the wedge angle no
+longer depends on the strips. With `tip_taper = 0.1` chord the wetted `CL` with tip
+shedding is 0.2485 +- 0.0003 from 12 to 32 strips at `n_c = 24`, and 0.2482 at
+`n_c = 32` and 48 (16 strips): converged in both directions, 13 % above the value
+without tip shedding, where the vortex-lattice codes put the effect of their tip
+rings at about 20 %. The ventilated `CL` converges in the strips at `n_c = 24`
+(0.1722 / 0.1719 at 24 / 32) but still not in `n_c` (0.149 / 0.168 / 0.179 / 0.201
+at 16 / 24 / 32 / 48), the open chordwise item below.
+
+Against the strut of Harwood et al. (2016), 14 pairs of `AR_h` and `Fn_h`, mean
+relative error without the two outlier pairs `(0.5, 1.5)` and `(1.5, 1.0)`: wetted
+16.5 % (8 strips, `n_c = 12`, no tip shedding) and 10.4 % (16 strips, `n_c = 24`,
+tip shedding, `tip_taper = 0.1`); ventilated 42.6 % and 15.3 %, the latter with
+the caveat above. Both options are off by default and the default mesh and system
+are unchanged; the relaxed wake is not (first-segment rule above), nor is any
+ventilated solve (spanwise cavity speed, see the cavity's pressure below).
+
 ### The wake cannot be convected, and the drift it loses is the wave elevation
 
 With `phi` antisymmetric the perturbation velocity obeys `v'(Rx) = -R v'(x)` while
@@ -201,7 +267,16 @@ the total surface speed `q_c = u sqrt(1 + sigma_c)`, hence `mu` by integration
 from detachment along the panel's own tangent with the arc-floored spacing the
 vendored wrap stencil uses. Integrating along the chord instead puts the
 leading-edge panels badly wrong, because there the surface tangent is nearly
-normal to the chord.
+normal to the chord. The spanwise part of `q_c` is taken from the wetted
+baseline, not lagged from the cavity iterate: lagged, it closed a loop through
+the free surface (the prescribed `mu` does not vanish at the waterline, its jump
+to the negative image makes a spanwise velocity of order `mu/dy`, which lowers the
+chordwise speed and raises `mu` again), and the ventilated `CL` diverged under
+spanwise refinement (`AR_h = 1`, `Fn_h = 2.5`, 10 deg, `n_c = 12`: 0.132 / 0.79 /
+2.6 at 8 / 32 / 80 strips). From the baseline it is 0.122 / 0.126 / 0.130 / 0.131
+at 8 / 16 / 32 / 64 strips. Wetted results are unchanged; every ventilated solve
+moves. Not cured: at `alpha >= 16 deg` the ventilated load still drifts beyond
+about 16 strips (cavity reaching the trailing edge on most strips, ragged closure).
 
 **Thickness.** The unknown on a cavity panel is then the source strength, which is
 the cavity's transpiration, and the thickness follows by chordwise integration.
@@ -361,21 +436,24 @@ At `Fn_h = 2.5`, `AR_h = 1`:
 
 | alpha | CL wet | CL vent | ratio | e wet | e vent | Lc max | D/h | Phi |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 6 | +0.1391 | +0.0757 | 0.544 | 0.342 | 0.084 | 0.904 | 0.94 | 51.6 |
-| 10 | +0.2300 | +0.1322 | 0.575 | 0.339 | 0.144 | 0.976 | 0.94 | 50.4 |
-| 14 | +0.3183 | +0.1779 | 0.559 | 0.335 | 0.181 | 1.000 | 0.94 | 49.9 |
-| 18 | +0.4029 | +0.2191 | 0.544 | 0.329 | 0.186 | 1.000 | 0.94 | 49.9 |
+| 6 | +0.1391 | +0.0723 | 0.520 | 0.342 | 0.091 | 0.904 | 0.94 | 51.6 |
+| 10 | +0.2300 | +0.1222 | 0.531 | 0.339 | 0.160 | 0.976 | 0.94 | 50.4 |
+| 14 | +0.3183 | +0.1494 | 0.469 | 0.335 | 0.252 | 1.000 | 0.94 | 49.9 |
+| 18 | +0.4029 | +0.1791 | 0.445 | 0.329 | 0.263 | 1.000 | 0.94 | 49.9 |
 
-The lift ratio is about 0.55 throughout, a loss of some 45%. Breslin & Skalak
+The lift ratio falls from 0.52 to 0.44 with incidence, a loss of 48 to 56%. Breslin & Skalak
 report losses of up to 70% and the paper's figure 12 shows the same ordering, so
 the sign, the ordering and the magnitude to within a factor are what this
 comparison supports; the mechanism this model lacks is the cavity closure region,
 where the experiment's re-entrant jet removes suction over an area a
 prescribed-pressure cavity cannot place. **Reported, not verified.**
 
-The centre of pressure moves from about 0.33 to about 0.19 of the chord forward of
-mid-chord. The paper's figure 14 quotes 1/4 wetted and 3/16 = 0.1875
-supercavitating; **the ventilated value lands on 3/16**, and the wetted value sits
+The centre of pressure moves from about 0.33 of the chord forward of mid-chord
+wetted to 0.09 - 0.26 ventilated, growing with incidence. The paper's figure 14
+quotes 1/4 wetted and 3/16 = 0.1875 supercavitating; the ventilated value crosses
+3/16 between 10 and 14 deg rather than landing on it (it did, at 0.18 - 0.19, while
+the spanwise cavity speed was lagged; that value was not mesh converged either,
+see the cavity's pressure above), and the wetted value sits
 further forward than a thin foil's quarter chord because the loading of a
 low-aspect-ratio surface-piercing strut is concentrated forward.
 
@@ -407,11 +485,11 @@ At `Fn_h = 2.5`, `AR_h = 1`, stall angle 14.5 deg:
 
 | alpha | from wetted | from ventilated | bi-stable |
 | --- | --- | --- | --- |
-| 6 | FW, CL = +0.14403 | PV, CL = +0.07794 | yes |
-| 10 | FW, CL = +0.23801 | PV, CL = +0.13413 | yes |
-| 13 | FW, CL = +0.30657 | PV, CL = +0.16505 | yes |
-| 16 | PV, CL = +0.37296 | PV, CL = +0.19743 | no |
-| 20 | PV, CL = +0.45732 | PV, CL = +0.23459 | no |
+| 6 | FW, CL = +0.14403 | PV, CL = +0.07530 | yes |
+| 10 | FW, CL = +0.23801 | PV, CL = +0.12759 | yes |
+| 13 | FW, CL = +0.30657 | PV, CL = +0.13783 | yes |
+| 16 | PV, CL = +0.37296 | PV, CL = +0.16123 | no |
+| 20 | PV, CL = +0.45732 | PV, CL = +0.18467 | no |
 
 The conditions are identical along each row and only the history differs. Above
 the stall angle the flow incepts from either start, so the bi-stable band runs
@@ -508,6 +586,11 @@ verification.
   reported for the growth of the cavity, the depth it reaches, and structural
   responses at a resolved growth rate - never for the detailed time history of the
   load at a fast one.
+- **The ventilated `CL` is not converged in the chordwise stations**: at 16 strips
+  with tip shedding it rises 0.141 / 0.145 / 0.149 / 0.168 / 0.179 / 0.201 from
+  `n_c = 8` to 48, while the wetted `CL` is converged at `n_c = 32`. At
+  `alpha >= 16 deg` and `n_c = 12` it also falls with the incidence at high Froude
+  number on the strut of `AR_h = 0.5`.
 - The cavity that leaves the trailing edge closes in the wake, and the wake sheet
   is then the cavity's continuation. That case is treated by prescribing the
   cavity condition over the whole suction side of the strip and taking the closure

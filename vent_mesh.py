@@ -64,6 +64,7 @@ import numpy as np
 import thick_panel_wing as tpw
 import make_thick_sample_inputs as mts
 import fem_mesh
+import tip_wake as tw
 
 DEPTH_AXIS = 1                 # y. The span of a surface-piercing strut is
                                # vertical, so the spanwise axis IS the depth
@@ -118,7 +119,8 @@ def symmetry_residual(points, y_fs=0.0):
 
 
 def strut_mesh(n_c=8, nspan_half=8, h=1.0, chord=1.0, thickness=0.12,
-               camber=0.0, alpha_deg=0.0, y_fs=0.0, image=True):
+               camber=0.0, alpha_deg=0.0, y_fs=0.0, image=True, spacing="uniform",
+               tip_taper=0.0):
     """Wrapped surface of a surface-piercing strut. -> (2*n_c+1, nspan+1, 3)
 
     image=True (the default) returns the DOUBLED body: the strut immersed to
@@ -135,8 +137,26 @@ def strut_mesh(n_c=8, nspan_half=8, h=1.0, chord=1.0, thickness=0.12,
     The strut is prismatic - unit taper, no sweep, no twist - and yawed by
     alpha_deg about the span axis, which for a vertical span is the incidence.
     Composed from the vendored builder and then symmetrised; no geometry is
-    written here.
+    written here beyond the station depths.
+
+    spacing chooses the depth of the spanwise stations on the immersed half:
+    'uniform' (the default); 'tip', the builder's cosine over the whole doubled
+    span, which clusters at the pinched tip and is coarsest at the waterline;
+    'cosine', a full cosine over the immersed half, clustered at both the tip
+    and the waterline, the two places where the loading varies fastest. The
+    strut is prismatic, so moving a station changes nothing but its depth.
+
+    tip_taper > 0 thins the section linearly to zero over that length (same
+    units as h and chord) above the free tip, so the tip is a wedge of fixed
+    angle: with tip shedding and tip_taper = 0.1 chord the strut's C_L stays
+    within 0.6 % from 12 to 64 strips (AR_h 1, alpha 10 deg, wetted). The
+    default pinches it within the last strip only, a wedge whose angle opens to
+    180 degrees as the strips get narrower: a blunt edge in the limit, from which
+    a shed tip sheet (tip_wake) can take no finite jump.
     """
+    if spacing not in ("uniform", "tip", "cosine"):
+        raise ValueError(f"unknown spacing '{spacing}'; choose from 'uniform', "
+                         f"'tip', 'cosine'")
     if h <= 0.0 or chord <= 0.0:
         raise ValueError(f"immersion and chord must be positive; got h={h}, "
                          f"chord={chord}")
@@ -145,7 +165,15 @@ def strut_mesh(n_c=8, nspan_half=8, h=1.0, chord=1.0, thickness=0.12,
                                  span=(2.0 * h if image else h),
                                  root_chord=chord, taper=1.0, sweep_deg=0.0,
                                  twist_deg=0.0, camber=camber,
-                                 thickness=thickness)
+                                 thickness=thickness,
+                                 cosine_span=(spacing == "tip"))
+    if spacing == "cosine":         # depth from the tip (0) to the waterline (h)
+        d = 0.5 * h * (1.0 - np.cos(np.pi * np.arange(nspan_half + 1) / nspan_half))
+        y = -h + d if image else -0.5 * h + d
+        points[:, :nspan_half + 1, DEPTH_AXIS] = y[None, :]
+    # the free tip only: the image is written from it below, and the waterline
+    # end of image=False is not a tip
+    points = tw.taper_tips(points, tip_taper, ends=(0,))
     if image:
         points = symmetrise_points(points, y_fs=0.0)
         points[..., DEPTH_AXIS] += y_fs

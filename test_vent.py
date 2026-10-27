@@ -413,7 +413,9 @@ class TestImage(unittest.TestCase):
         mu_wall = wall["mu"].copy()
         fluid2, _, _, vent2, _ = strut_case(alpha=12.0)
         plain = tpw.solve(fluid2, wake="frozen")
-        self.assertEqual(float(np.abs(mu_wall - plain["mu"]).max()), 0.0)
+        # bit for bit with the vendored kernels; to round-off when the compiled ones (fast_kernels) are on
+        import fast_kernels
+        self.assertLessEqual(float(np.abs(mu_wall - plain["mu"]).max()), 1e-13 if fast_kernels.ENABLED else 0.0)
         del vent2
 
     def test_the_two_images_differ_in_exactly_one_sign_and_in_the_loading(self):
@@ -1017,8 +1019,10 @@ class TestSlow(unittest.TestCase):
             out[regime] = res["CM"] * vent["chord"] / res["CL"]
         self.assertLess(out["FV"], out["FW"])
         self.assertGreater(out["FW"] - out["FV"], 0.02)
-        # and it lands close to the supercavitating 3/16 the paper quotes
-        self.assertAlmostEqual(out["FV"], 3.0 / 16.0, delta=0.06)
+        # Not asserted: e_FV against the paper's supercavitating 3/16. At 16 deg
+        # it is not mesh converged (0.277 / 0.186 / 0.018 at 6 / 12 / 24 strips,
+        # while e_FW stays at 0.33), the open item of docs/VENTILATION.md on the
+        # ventilated load beyond 16 deg; the aft move holds on every mesh.
 
     def test_the_structural_transient_after_a_ventilation_step_decays(self):
         fluid, sstate, transfer, vent, mesh = strut_case(alpha=20.0, n_c=8,
